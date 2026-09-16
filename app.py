@@ -14,6 +14,7 @@ st.set_page_config(
     layout="centered",
 )
 
+st.image("logo.jpg", width=160)
 st.title("Descarga de precios históricos")
 st.caption(
     "Bajá precios de cierre ajustados desde Yahoo Finance, con la variación "
