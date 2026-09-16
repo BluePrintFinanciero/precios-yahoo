@@ -407,8 +407,7 @@ def tab_cartera():
 
     # 2 · Mapa de correlaciones -----------------------------------------------------
     st.subheader("2 · ¿Tus activos se mueven distinto entre sí?")
-    cm = res["corr_matrix"].reset_index().melt(id_vars="index", var_name="b", value_name="corr")
-    cm = cm.rename(columns={"index": "a"})
+    cm = res["corr_matrix"].rename_axis(index="a", columns=None).reset_index().melt(id_vars="a", var_name="b", value_name="corr")
     heat = (
         alt.Chart(cm)
         .mark_rect()
@@ -446,7 +445,7 @@ def tab_cartera():
     st.subheader("3 · Cuánto riesgo tiene cada activo")
     vol_df = pd.concat(
         [res["vol"][assets], pd.Series({"Tu cartera": res["vol_port"], bench_label.split(" (")[0]: res["vol_bench"]})]
-    ).rename("Volatilidad anual %").reset_index().rename(columns={"index": "Activo"})
+    ).rename("Volatilidad anual %").rename_axis("Activo").reset_index()
     vol_df["Tipo"] = np.where(vol_df["Activo"].isin(assets), "Activo", "Referencia")
     bars = (
         alt.Chart(vol_df)
@@ -486,7 +485,7 @@ def tab_cartera():
 
     # 5 · Base 100 ------------------------------------------------------------------
     st.subheader("5 · Tu cartera contra el índice")
-    g = res["growth"].reset_index().rename(columns={"index": "Fecha"}).melt(id_vars="Fecha", var_name="Serie", value_name="Valor")
+    g = res["growth"].rename_axis("Fecha").reset_index().melt(id_vars="Fecha", var_name="Serie", value_name="Valor")
     line = (
         alt.Chart(g)
         .mark_line(strokeWidth=2)
