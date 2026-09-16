@@ -9,12 +9,12 @@ import yfinance as yf
 # Configuración de la página (cambiá nombre/emoji a gusto)
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Descarga de precios | Yahoo Finance",
+    page_title="Blueprint Financiero | Descarga de precios",
     page_icon="📈",
     layout="centered",
 )
 
-st.image("logo.jpg", width=160)
+st.image("logo.jpg", width=260)
 st.title("Descarga de precios históricos")
 st.caption(
     "Bajá precios de cierre ajustados desde Yahoo Finance, con la variación "
@@ -167,6 +167,6 @@ if submitted:
 
 st.divider()
 st.caption(
-    "Datos provistos por Yahoo Finance a través de la librería yfinance. "
+    "Blueprint Financiero · Datos provistos por Yahoo Finance a través de la librería yfinance. "
     "Uso informativo y educativo; no constituye recomendación de inversión."
 )
