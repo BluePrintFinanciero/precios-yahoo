@@ -336,6 +336,14 @@ def tab_cartera():
         key=f"weights_{','.join(tickers)}",
     )
 
+    total_w = float(pd.to_numeric(weights_df["Peso %"], errors="coerce").fillna(0).sum())
+    if abs(total_w - 100) < 0.05:
+        st.success(f"Total cargado: {total_w:.1f}% ✓")
+    elif total_w < 100:
+        st.warning(f"Total cargado: {total_w:.1f}% · te faltan {100 - total_w:.1f}% para llegar al 100%")
+    else:
+        st.warning(f"Total cargado: {total_w:.1f}% · te pasaste {total_w - 100:.1f}% del 100%")
+
     c1, c2 = st.columns(2)
     bench_label = c1.selectbox("Comparar contra", options=list(BENCHMARKS))
     bench = BENCHMARKS[bench_label]
@@ -490,7 +498,7 @@ def tab_cartera():
         alt.Chart(g)
         .mark_line(strokeWidth=2)
         .encode(
-            x=alt.X("Fecha:T", title=None),
+            x=alt.X("Fecha:T", title=None, axis=alt.Axis(format="%m/%Y", labelAngle=0)),
             y=alt.Y("Valor:Q", title="Base 100", scale=alt.Scale(zero=False)),
             color=alt.Color("Serie:N", scale=alt.Scale(domain=["Tu cartera", "Índice"], range=["#6b7fa8", "#c1c2c4"]), legend=alt.Legend(title=None, orient="top")),
             tooltip=[alt.Tooltip("Fecha:T"), "Serie", alt.Tooltip("Valor:Q", format=".0f")],
@@ -502,7 +510,7 @@ def tab_cartera():
     final_b = res["growth"]["Índice"].iloc[-1]
     won = final_p >= final_b
     st.write(
-        f"$100 invertidos en tu cartera al inicio hoy serían **${final_p:,.0f}**; en el índice, **${final_b:,.0f}**. "
+        f"\\$100 invertidos en tu cartera al inicio hoy serían **\\${final_p:,.0f}**; en el índice, **\\${final_b:,.0f}**. "
         f"Rendimiento anual: {res['ann_port']:.1f}% vs. {res['ann_bench']:.1f}%, con volatilidad de "
         f"{res['vol_port']:.0f}% vs. {res['vol_bench']:.0f}%. "
         + ("Le ganaste al índice, pero mirá si fue asumiendo más riesgo." if won and res["vol_port"] > res["vol_bench"] * 1.05
