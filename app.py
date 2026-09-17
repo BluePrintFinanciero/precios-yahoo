@@ -69,6 +69,28 @@ def autosize(ws, max_rows=200):
         ws.column_dimensions[col[0].column_letter].width = min(max(width + 2, 12), 40)
 
 
+
+def ticker_help():
+    st.caption(
+        "Usá los símbolos de **Yahoo Finance**. Si no lo sabés, "
+        "[buscalo acá](https://finance.yahoo.com/lookup) y copiá el que aparece en mayúsculas."
+    )
+    with st.expander("¿Cómo encuentro el ticker?"):
+        st.markdown(
+            """
+| Qué querés | Ticker | Ejemplo |
+|---|---|---|
+| Acción de EE.UU. | El símbolo tal cual | `AAPL`, `MSFT`, `KO` |
+| Acción argentina en pesos (BYMA) | Símbolo + `.BA` | `GGAL.BA`, `YPFD.BA` |
+| CEDEAR en pesos | Símbolo de EE.UU. + `.BA` | `AAPL.BA`, `MELI.BA` |
+| ETF | El símbolo tal cual | `SPY`, `QQQ`, `GLD` |
+| Índice | Empieza con `^` | `^GSPC` (S&P 500), `^NDX`, `^MERV` |
+| Cripto | Moneda + `-USD` | `BTC-USD`, `ETH-USD` |
+
+Ojo con las trampas: `BTC` solo (sin `-USD`) es un ETF, no Bitcoin; `GGAL` sin `.BA` es el ADR en Nueva York en dólares.
+            """
+        )
+
 # ---------------------------------------------------------------------------
 # PESTAÑA 1 · Descarga de precios
 # ---------------------------------------------------------------------------
@@ -104,8 +126,9 @@ def tab_descarga():
         tickers_raw = st.text_input(
             "Tickers (separados por coma)",
             value="AMZN, GOOGL, NVDA, ^NDX",
-            help="Cualquier símbolo de Yahoo Finance. Ej: AAPL, YPF.BA (BYMA), ^GSPC (S&P 500).",
+            help="Cualquier símbolo de Yahoo Finance. Ej: AAPL, YPFD.BA (BYMA), ^GSPC (S&P 500).",
         )
+        ticker_help()
         c1, c2 = st.columns(2)
         start = c1.date_input("Desde", value=date(2017, 1, 2), min_value=date(1970, 1, 1), key="d_start")
         end = c2.date_input("Hasta", value=date.today(), key="d_end")
@@ -320,9 +343,10 @@ def tab_cartera():
     tickers_raw = st.text_input(
         "Tickers de tu cartera (separados por coma)",
         value="AAPL, MSFT, NVDA, KO, GLD",
-        help="Ej: GGAL.BA para acciones argentinas en pesos, AAPL.BA para CEDEARs, BTC-USD para cripto.",
+        help="Ej: GGAL.BA para acciones argentinas en pesos, AAPL.BA para CEDEARs, BTC-USD o ETH-USD para cripto (BTC solo, sin -USD, es un ETF).",
         key="c_tickers",
     )
+    ticker_help()
     tickers = parse_tickers(tickers_raw)
 
     st.markdown("**Pesos (% de la cartera).** Si no los tocás, se reparte en partes iguales.")
@@ -398,9 +422,12 @@ def tab_cartera():
     assets = list(res["weights"].index)
 
     if res["years"] < years_back * 0.8:
+        first_dates = {t: close[t].first_valid_index() for t in assets + [bench]}
+        culprit = max(first_dates, key=lambda t: first_dates[t])
+        hint = " Si querías Bitcoin, el ticker es BTC-USD." if culprit == "BTC" else ""
         st.info(
-            f"Algún activo tiene historia más corta: el análisis cubre desde {res['start']} "
-            f"({res['years']:.1f} años), el tramo en que todos tienen datos."
+            f"**{culprit}** tiene historia desde {first_dates[culprit].date()}, así que el análisis cubre "
+            f"desde {res['start']} ({res['years']:.1f} años), el tramo en que todos tienen datos.{hint}"
         )
 
     st.caption(f"Período analizado: {res['start']} → {res['end']} · Datos diarios ajustados por dividendos y splits.")
