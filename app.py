@@ -18,6 +18,87 @@ st.set_page_config(
 
 st.image("logo.jpg", width=260)
 
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+html, body, [class*="css"], .stApp, .stMarkdown, input, textarea, button, select, label,
+div[data-testid="stMetricValue"], div[data-testid="stMetricLabel"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+h1, h2, h3 { letter-spacing: -0.01em; }
+h2 { font-size: 1.55rem !important; font-weight: 700 !important; padding-bottom: .2rem !important; }
+h3 { font-size: 1.12rem !important; font-weight: 600 !important; color: #c1c2c4 !important;
+     margin-top: 2.2rem !important; padding-bottom: .3rem !important; }
+
+/* Tarjetas para métricas */
+div[data-testid="stMetric"] {
+    background: #16203a; border: 1px solid #263355; border-radius: 12px;
+    padding: 14px 18px 12px 18px;
+    transition: transform .18s ease, border-color .18s ease;
+}
+div[data-testid="stMetric"]:hover { transform: translateY(-2px); border-color: #6b7fa8; }
+div[data-testid="stMetricLabel"] p { color: #8f97a8 !important; font-size: .8rem !important;
+     text-transform: uppercase; letter-spacing: .06em; }
+div[data-testid="stMetricValue"] { font-size: 2rem !important; font-weight: 700 !important; color: #e2e4e8 !important; }
+
+/* Recuadro de lectura */
+.bp-callout {
+    background: linear-gradient(135deg, #16203a 0%, #131c33 100%);
+    border-left: 4px solid #6b7fa8; border-radius: 0 12px 12px 0;
+    padding: 14px 18px; margin: 10px 0 6px 0; font-size: 1.02rem; line-height: 1.55; color: #e2e4e8;
+}
+.bp-callout b { color: #ffffff; }
+
+/* Termómetro */
+.bp-gauge { margin: 6px 0 4px 0; }
+.bp-gauge-track { width: 100%; height: 12px; background: #16203a; border: 1px solid #263355;
+    border-radius: 999px; overflow: hidden; }
+.bp-gauge-fill { height: 100%; border-radius: 999px;
+    background: linear-gradient(90deg, #3b8f5e 0%, #c9a34a 55%, #c8503f 100%);
+    background-size: var(--full) 100%;
+    animation: bp-grow 1s cubic-bezier(.2,.8,.2,1) both; }
+@keyframes bp-grow { from { width: 0 } }
+.bp-gauge-labels { display: flex; justify-content: space-between; font-size: .75rem; color: #8f97a8; margin-top: 4px; }
+
+/* Fade-in de resultados */
+.bp-results, div[data-testid="stVerticalBlock"] > div:has(> div.bp-fade) { animation: bp-fade .6s ease both; }
+@keyframes bp-fade { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: none } }
+
+/* Botón primario */
+button[kind="primary"] { border-radius: 10px !important; font-weight: 600 !important; letter-spacing: .01em;
+    transition: transform .12s ease, box-shadow .12s ease !important; }
+button[kind="primary"]:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(107,127,168,.35) !important; }
+
+/* Inputs y tabla */
+div[data-baseweb="input"] > div, div[data-baseweb="select"] > div { border-radius: 10px !important; }
+div[data-testid="stDataEditor"], div[data-testid="stDataFrame"] { border-radius: 12px; overflow: hidden; }
+
+/* Separadores más suaves */
+hr { border-color: #263355 !important; }
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+
+def callout(text: str):
+    st.markdown(f'<div class="bp-callout bp-fade">{text}</div>', unsafe_allow_html=True)
+
+
+def gauge(value: float, left: str, right: str):
+    pct = max(0.0, min(1.0, value)) * 100
+    st.markdown(
+        f"""
+<div class="bp-gauge bp-fade">
+  <div class="bp-gauge-track">
+    <div class="bp-gauge-fill" style="width:{pct:.0f}%; --full:{100 / max(pct, 1) * 100:.0f}%"></div>
+  </div>
+  <div class="bp-gauge-labels"><span>{left}</span><span>{right}</span></div>
+</div>""",
+        unsafe_allow_html=True,
+    )
+
+
 TRADING_DAYS = 252
 
 BENCHMARKS = {
@@ -396,19 +477,23 @@ def tab_cartera():
     end = date.today()
     start = end - timedelta(days=int(years_back * 365.25))
 
-    with st.spinner("Descargando datos y calculando..."):
-        try:
-            close = download_prices(tuple(sorted(set(list(weights) + [bench]))), start, end, "1d", True)
-        except Exception as e:  # noqa: BLE001
-            st.error(f"No se pudo descargar la información. Detalle: {e}")
-            return
+    status = st.status("Analizando tu cartera…", expanded=True)
+    status.write("📥 Descargando precios históricos desde Yahoo Finance…")
+    try:
+        close = download_prices(tuple(sorted(set(list(weights) + [bench]))), start, end, "1d", True)
+    except Exception as e:  # noqa: BLE001
+        status.update(label="No se pudo descargar la información", state="error")
+        st.error(f"Detalle: {e}")
+        return
 
     if close.empty:
+        status.update(label="Sin datos", state="error")
         st.error("Yahoo Finance no devolvió datos. Revisá los tickers.")
         return
 
     missing = [t for t in list(weights) + [bench] if t not in close.columns or close[t].isna().all()]
     if bench in missing:
+        status.update(label="Sin datos para el índice", state="error")
         st.error(f"No hay datos para el índice {bench}. Probá con otro.")
         return
     if missing:
@@ -418,8 +503,13 @@ def tab_cartera():
             st.error("Quedaron menos de dos activos con datos.")
             return
 
+    status.write("📐 Calculando correlaciones, volatilidad y caídas…")
     res = analyze(close, weights, bench)
     assets = list(res["weights"].index)
+    status.write("📊 Armando gráficos…")
+    status.update(label="Análisis listo ✓", state="complete", expanded=False)
+
+    st.markdown('<div class="bp-fade"></div>', unsafe_allow_html=True)
 
     if res["years"] < years_back * 0.8:
         first_dates = {t: close[t].first_valid_index() for t in assets + [bench]}
@@ -438,9 +528,11 @@ def tab_cartera():
     m1.metric("Correlación con el índice", f"{res['corr_pb']:.0%}")
     m2.metric("Beta", f"{res['beta']:.2f}", help="Si el índice sube 1%, tu cartera tiende a moverse este número en %.")
     m3.metric("Activos", f"{len(assets)}")
-    st.write(f"Tu cartera **{corr_phrase(res['corr_pb'])}**")
+    gauge(res["corr_pb"], "Independiente del índice", "Se mueve igual que el índice")
+    callout(f"Tu cartera <b>{corr_phrase(res['corr_pb'])}</b>")
 
     # 2 · Mapa de correlaciones -----------------------------------------------------
+    st.divider()
     st.subheader("2 · ¿Tus activos se mueven distinto entre sí?")
     cm = res["corr_matrix"].rename_axis(index="a", columns=None).reset_index().melt(id_vars="a", var_name="b", value_name="corr")
     heat = (
@@ -466,18 +558,19 @@ def tab_cartera():
     n_pairs = len(res["pairs"])
     n_high = len(res["high_pairs"])
     if n_high == 0:
-        st.write("Ningún par de activos tiene correlación mayor a 0,80. **Tus activos se mueven de forma distinta entre sí: buena diversificación interna.**")
+        callout("Ningún par de activos tiene correlación mayor a 0,80. <b>Tus activos se mueven de forma distinta entre sí: buena diversificación interna.</b>")
     else:
         names = ", ".join(f"{a}–{b}" for a, b, _ in res["high_pairs"][:4])
         extra = f" y {n_high - 4} más" if n_high > 4 else ""
-        st.write(
-            f"**{n_high} de {n_pairs} pares se mueven casi igual** (correlación ≥ 0,80): {names}{extra}. "
+        callout(
+            f"<b>{n_high} de {n_pairs} pares se mueven casi igual</b> (correlación ≥ 0,80): {names}{extra}. "
             "En la práctica, esos activos funcionan como una sola apuesta."
         )
     st.caption("Verde: se mueven distinto (diversifican). Rojo: se mueven igual (no diversifican).")
 
     # 3 · Volatilidad ---------------------------------------------------------------
-    st.subheader("3 · Cuánto riesgo tiene cada activo")
+    st.divider()
+    st.subheader("3 · Cuánto riesgo tiene cada activo", help="Volatilidad anualizada: qué tan grandes son los sube y baja de cada activo en un año típico, en ambas direcciones. No es cuánto podés perder; eso está en la sección 4.")
     vol_df = pd.concat(
         [res["vol"][assets], pd.Series({"Tu cartera": res["vol_port"], bench_label.split(" (")[0]: res["vol_bench"]})]
     ).rename("Volatilidad anual %").rename_axis("Activo").reset_index()
@@ -497,20 +590,21 @@ def tab_cartera():
     most = res["vol"][assets].idxmax()
     least = res["vol"][assets].idxmin()
     ratio_ml = res["vol"][most] / res["vol"][least]
-    st.write(
+    callout(
         f"{vol_phrase(res['vol_port'], res['vol_bench'])} "
-        f"**{most}** es tu activo más volátil ({res['vol'][most]:.0f}% anual) y **{least}** el más estable "
+        f"<b>{most}</b> es tu activo más volátil ({res['vol'][most]:.0f}% anual) y <b>{least}</b> el más estable "
         f"({res['vol'][least]:.0f}%): darles el mismo peso no significa asumir el mismo riesgo en cada uno "
         f"(uno se mueve {ratio_ml:.1f} veces más que el otro)."
     )
 
     # 4 · Drawdowns -----------------------------------------------------------------
+    st.divider()
     st.subheader("4 · Cuánto podría caer")
     dd = res["dd"].copy()
     dd_port = dd.iloc[0]
     rec = "todavía no recuperó ese nivel" if dd_port["Meses para recuperar"] == -1 else f"tardó {int(dd_port['Meses para recuperar'])} meses en recuperar"
-    st.write(
-        f"En el período analizado, tu cartera **hubiese caído hasta un {abs(dd_port['Peor caída %']):.0f}%** "
+    callout(
+        f"En el período analizado, tu cartera <b>hubiese caído hasta un {abs(dd_port['Peor caída %']):.0f}%</b> "
         f"desde su máximo (piso en {dd_port['Piso']}) y {rec}. ¿Lo aguantarías sin vender?"
     )
     dd_show = dd.copy()
@@ -519,6 +613,7 @@ def tab_cartera():
     st.dataframe(dd_show, hide_index=True, use_container_width=True)
 
     # 5 · Base 100 ------------------------------------------------------------------
+    st.divider()
     st.subheader("5 · Tu cartera contra el índice")
     g = res["growth"].rename_axis("Fecha").reset_index().melt(id_vars="Fecha", var_name="Serie", value_name="Valor")
     line = (
@@ -536,8 +631,8 @@ def tab_cartera():
     final_p = res["growth"]["Tu cartera"].iloc[-1]
     final_b = res["growth"]["Índice"].iloc[-1]
     won = final_p >= final_b
-    st.write(
-        f"\\$100 invertidos en tu cartera al inicio hoy serían **\\${final_p:,.0f}**; en el índice, **\\${final_b:,.0f}**. "
+    callout(
+        f"\\$100 invertidos en tu cartera al inicio hoy serían <b>\\${final_p:,.0f}</b>; en el índice, <b>\\${final_b:,.0f}</b>. "
         f"Rendimiento anual: {res['ann_port']:.1f}% vs. {res['ann_bench']:.1f}%, con volatilidad de "
         f"{res['vol_port']:.0f}% vs. {res['vol_bench']:.0f}%. "
         + ("Le ganaste al índice, pero mirá si fue asumiendo más riesgo." if won and res["vol_port"] > res["vol_bench"] * 1.05
@@ -546,6 +641,7 @@ def tab_cartera():
     )
 
     # Detalle y descarga ------------------------------------------------------------
+    st.divider()
     st.subheader("Detalle por activo")
     st.dataframe(
         res["summary"].style.format({"Peso %": "{:.1f}", "Rendimiento anual %": "{:.1f}", "Volatilidad anual %": "{:.1f}", "Correlación c/ índice": "{:.2f}"}),
