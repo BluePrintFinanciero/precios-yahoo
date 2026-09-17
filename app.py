@@ -632,7 +632,7 @@ def tab_cartera():
     final_b = res["growth"]["Índice"].iloc[-1]
     won = final_p >= final_b
     callout(
-        f"\\$100 invertidos en tu cartera al inicio hoy serían <b>\\${final_p:,.0f}</b>; en el índice, <b>\\${final_b:,.0f}</b>. "
+        f"&#36;100 invertidos en tu cartera al inicio hoy serían <b>&#36;{final_p:,.0f}</b>; en el índice, <b>&#36;{final_b:,.0f}</b>. "
         f"Rendimiento anual: {res['ann_port']:.1f}% vs. {res['ann_bench']:.1f}%, con volatilidad de "
         f"{res['vol_port']:.0f}% vs. {res['vol_bench']:.0f}%. "
         + ("Le ganaste al índice, pero mirá si fue asumiendo más riesgo." if won and res["vol_port"] > res["vol_bench"] * 1.05
