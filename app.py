@@ -454,7 +454,20 @@ def tab_cartera():
     bench = BENCHMARKS[bench_label]
     if bench is None:
         bench = c1.text_input("Ticker del índice / ETF", value="SPY").strip().upper()
-    years_back = c2.selectbox("Período", options=[3, 5, 10, 15], index=1, format_func=lambda y: f"Últimos {y} años")
+    period_label = c2.selectbox(
+        "Período",
+        options=["Últimos 3 años", "Últimos 5 años", "Últimos 10 años", "Últimos 15 años", "Personalizado"],
+        index=1,
+    )
+    if period_label == "Personalizado":
+        f1, f2 = st.columns(2)
+        start = f1.date_input("Desde", value=date.today() - timedelta(days=365 * 5),
+                              min_value=date(1970, 1, 1), max_value=date.today(), key="c_start")
+        end = f2.date_input("Hasta", value=date.today(), min_value=date(1970, 1, 1),
+                            max_value=date.today(), key="c_end")
+    else:
+        end = date.today()
+        start = end - timedelta(days=int(int(period_label.split()[1]) * 365.25))
 
     run = st.button("Analizar mi cartera", type="primary", use_container_width=True)
     if not run:
@@ -473,9 +486,12 @@ def tab_cartera():
         return
     if abs(sum(weights.values()) - 100) > 0.5:
         st.info(f"Los pesos suman {sum(weights.values()):.1f}%. Se normalizan automáticamente a 100%.")
-
-    end = date.today()
-    start = end - timedelta(days=int(years_back * 365.25))
+    if start >= end:
+        st.error("La fecha 'Desde' tiene que ser anterior a 'Hasta'.")
+        return
+    if (end - start).days < 120:
+        st.error("El período es muy corto para un análisis confiable. Elegí al menos 4 meses.")
+        return
 
     status = st.status("Analizando tu cartera…", expanded=True)
     status.write("📥 Descargando precios históricos desde Yahoo Finance…")
@@ -511,7 +527,8 @@ def tab_cartera():
 
     st.markdown('<div class="bp-fade"></div>', unsafe_allow_html=True)
 
-    if res["years"] < years_back * 0.8:
+    requested_years = (end - start).days / 365.25
+    if res["years"] < requested_years * 0.8:
         first_dates = {t: close[t].first_valid_index() for t in assets + [bench]}
         culprit = max(first_dates, key=lambda t: first_dates[t])
         hint = " Si querías Bitcoin, el ticker es BTC-USD." if culprit == "BTC" else ""
