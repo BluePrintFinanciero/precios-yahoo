@@ -115,6 +115,35 @@ INTERVALS = {"Diaria": "1d", "Semanal": "1wk", "Mensual": "1mo"}
 # ---------------------------------------------------------------------------
 # Utilidades compartidas
 # ---------------------------------------------------------------------------
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def risk_free_rate(start: date, end: date) -> float | None:
+    """Promedio de la letra del Tesoro de EE.UU. a 13 semanas (^IRX), en % anual."""
+    try:
+        irx = yf.download("^IRX", start=start.isoformat(), end=(end + timedelta(days=1)).isoformat(),
+                          progress=False, auto_adjust=False)
+        if irx.empty:
+            return None
+        col = irx["Close"]
+        if hasattr(col, "columns"):
+            col = col.iloc[:, 0]
+        val = float(col.dropna().mean())
+        return val if 0 <= val < 25 else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def sharpe_phrase(sh: float) -> str:
+    if sh < 0:
+        return "por debajo de cero: en este período, el riesgo asumido no se pagó ni siquiera contra una letra del Tesoro."
+    if sh < 0.5:
+        return "bajo: mucho riesgo para el rendimiento obtenido."
+    if sh < 1:
+        return "razonable, en línea con lo que suele dar el mercado."
+    if sh < 2:
+        return "bueno: el riesgo asumido se pagó bien."
+    return "muy alto. Suele pasar en períodos cortos o muy favorables; desconfiá de que se repita."
+
+
 def parse_tickers(raw: str) -> list[str]:
     seen = []
     for t in raw.replace(";", ",").replace("\n", ",").split(","):
@@ -306,7 +335,7 @@ def vol_phrase(vol_port: float, vol_bench: float) -> str:
     return f"Tu cartera es menos volátil que el índice ({ratio:.2f} veces)."
 
 
-def analyze(close: pd.DataFrame, weights: dict[str, float], bench: str) -> dict:
+def analyze(close: pd.DataFrame, weights: dict[str, float], bench: str, rf: float = 0.0) -> dict:
     assets = list(weights)
     data = close[assets + [bench]].dropna()
     rets = data.pct_change().dropna()
@@ -346,11 +375,16 @@ def analyze(close: pd.DataFrame, weights: dict[str, float], bench: str) -> dict:
             pairs.append((a, b, corr_matrix.loc[a, b]))
     high_pairs = [p for p in pairs if p[2] >= 0.8]
 
+    sharpe = lambda r, v: (r - rf) / v if v else np.nan  # noqa: E731
+    sharpe_port = sharpe(ann(port_ret), vol_port)
+    sharpe_bench = sharpe(ann(bench_ret), vol[bench])
+
     summary = pd.DataFrame(
         {
             "Peso %": (w * 100).round(1),
             "Rendimiento anual %": [ann(rets[a]) for a in assets],
             "Volatilidad anual %": [vol[a] for a in assets],
+            "Sharpe": [sharpe(ann(rets[a]), vol[a]) for a in assets],
             "Correlación c/ índice": [rets[a].corr(bench_ret) for a in assets],
         },
         index=assets,
@@ -374,6 +408,9 @@ def analyze(close: pd.DataFrame, weights: dict[str, float], bench: str) -> dict:
         high_pairs=high_pairs,
         summary=summary,
         weights=w,
+        rf=rf,
+        sharpe_port=sharpe_port,
+        sharpe_bench=sharpe_bench,
     )
 
 
@@ -388,6 +425,9 @@ def analysis_to_excel(res: dict, bench: str) -> bytes:
                     f"Rendimiento anual índice ({bench}) %",
                     "Volatilidad anual cartera %",
                     f"Volatilidad anual índice ({bench}) %",
+                    "Sharpe cartera",
+                    f"Sharpe índice ({bench})",
+                    "Tasa libre de riesgo usada %",
                     "Correlación cartera vs índice",
                     "Beta cartera vs índice",
                 ],
@@ -397,6 +437,9 @@ def analysis_to_excel(res: dict, bench: str) -> bytes:
                     round(res["ann_bench"], 2),
                     round(res["vol_port"], 2),
                     round(res["vol_bench"], 2),
+                    round(res["sharpe_port"], 3),
+                    round(res["sharpe_bench"], 3),
+                    round(res["rf"], 2),
                     round(res["corr_pb"], 3),
                     round(res["beta"], 3),
                 ],
@@ -469,6 +512,16 @@ def tab_cartera():
         end = date.today()
         start = end - timedelta(days=int(int(period_label.split()[1]) * 365.25))
 
+    with st.expander("Opciones avanzadas"):
+        rf_auto = st.checkbox(
+            "Usar la tasa libre de riesgo real del período (letra del Tesoro de EE.UU. a 13 semanas)",
+            value=True,
+            help="Se usa para calcular el Sharpe: cuánto rendimiento te dio cada unidad de riesgo, "
+                 "por encima de lo que habrías ganado sin correr riesgo.",
+        )
+        rf_manual = st.number_input("Tasa libre de riesgo anual (%)", min_value=0.0, max_value=25.0,
+                                    value=4.0, step=0.25, disabled=rf_auto)
+
     run = st.button("Analizar mi cartera", type="primary", use_container_width=True)
     if not run:
         return
@@ -519,8 +572,20 @@ def tab_cartera():
             st.error("Quedaron menos de dos activos con datos.")
             return
 
+    if rf_auto:
+        status.write("🏦 Buscando la tasa libre de riesgo del período…")
+        rf = risk_free_rate(start, end)
+        if rf is None:
+            rf = rf_manual
+            rf_note = f"No se pudo bajar la tasa del período; se usó {rf:.2f}% para el Sharpe."
+        else:
+            rf_note = f"Tasa libre de riesgo del período: {rf:.2f}% anual (letra del Tesoro de EE.UU. a 13 semanas)."
+    else:
+        rf = rf_manual
+        rf_note = f"Tasa libre de riesgo fijada manualmente en {rf:.2f}% anual."
+
     status.write("📐 Calculando correlaciones, volatilidad y caídas…")
-    res = analyze(close, weights, bench)
+    res = analyze(close, weights, bench, rf)
     assets = list(res["weights"].index)
     status.write("📊 Armando gráficos…")
     status.update(label="Análisis listo ✓", state="complete", expanded=False)
@@ -648,20 +713,37 @@ def tab_cartera():
     final_p = res["growth"]["Tu cartera"].iloc[-1]
     final_b = res["growth"]["Índice"].iloc[-1]
     won = final_p >= final_b
+
+    s1, s2, s3 = st.columns(3)
+    s1.metric("Rendimiento anual", f"{res['ann_port']:.1f}%", f"{res['ann_port'] - res['ann_bench']:+.1f} pp vs. índice")
+    s2.metric("Volatilidad anual", f"{res['vol_port']:.0f}%", f"{res['vol_port'] - res['vol_bench']:+.0f} pp vs. índice",
+              delta_color="inverse")
+    s3.metric("Sharpe", f"{res['sharpe_port']:.2f}", f"{res['sharpe_port'] - res['sharpe_bench']:+.2f} vs. índice",
+              help="Rendimiento por unidad de riesgo, descontando la tasa libre de riesgo. Más alto es mejor.")
     callout(
         f"&#36;100 invertidos en tu cartera al inicio hoy serían <b>&#36;{final_p:,.0f}</b>; en el índice, <b>&#36;{final_b:,.0f}</b>. "
         f"Rendimiento anual: {res['ann_port']:.1f}% vs. {res['ann_bench']:.1f}%, con volatilidad de "
         f"{res['vol_port']:.0f}% vs. {res['vol_bench']:.0f}%. "
-        + ("Le ganaste al índice, pero mirá si fue asumiendo más riesgo." if won and res["vol_port"] > res["vol_bench"] * 1.05
+        + ("Le ganaste al índice, pero asumiendo más riesgo." if won and res["vol_port"] > res["vol_bench"] * 1.05
            else "Le ganaste al índice con un riesgo similar o menor." if won
            else "El índice rindió más: vale preguntarse qué aporta la selección de activos.")
+    )
+    better = "mejor" if res["sharpe_port"] > res["sharpe_bench"] else "peor"
+    callout(
+        f"<b>Sharpe {res['sharpe_port']:.2f}</b> contra {res['sharpe_bench']:.2f} del índice: por cada unidad de "
+        f"riesgo que asumiste, tu cartera te pagó {better} que el mercado. Un Sharpe de "
+        f"{res['sharpe_port']:.2f} es {sharpe_phrase(res['sharpe_port'])}"
+    )
+    st.caption(
+        f"{rf_note} El Sharpe solo es comparable entre carteras medidas en el mismo período y la misma moneda, "
+        "y un Sharpe alto en el pasado no anticipa el futuro."
     )
 
     # Detalle y descarga ------------------------------------------------------------
     st.divider()
     st.subheader("Detalle por activo")
     st.dataframe(
-        res["summary"].style.format({"Peso %": "{:.1f}", "Rendimiento anual %": "{:.1f}", "Volatilidad anual %": "{:.1f}", "Correlación c/ índice": "{:.2f}"}),
+        res["summary"].style.format({"Peso %": "{:.1f}", "Rendimiento anual %": "{:.1f}", "Volatilidad anual %": "{:.1f}", "Sharpe": "{:.2f}", "Correlación c/ índice": "{:.2f}"}),
         use_container_width=True,
     )
     st.download_button(
