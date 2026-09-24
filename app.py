@@ -335,14 +335,18 @@ def vol_phrase(vol_port: float, vol_bench: float) -> str:
     return f"Tu cartera es menos volátil que el índice ({ratio:.2f} veces)."
 
 
-def analyze(close: pd.DataFrame, weights: dict[str, float], bench: str, rf: float = 0.0) -> dict:
+def analyze(close: pd.DataFrame, weights: dict[str, float], bench: str, rf: float = 0.0,
+            cash_w: float = 0.0, cash_rate: float = 0.0) -> dict:
     assets = list(weights)
     data = close[assets + [bench]].dropna()
     rets = data.pct_change().dropna()
     w = pd.Series(weights, dtype=float)
-    w = w / w.sum()
+    total = w.sum() + cash_w
+    w = w / total                      # fracción del total, incluyendo efectivo
+    cash_f = cash_w / total
+    cash_daily = (1 + cash_rate / 100) ** (1 / TRADING_DAYS) - 1
 
-    port_ret = (rets[assets] * w).sum(axis=1)
+    port_ret = (rets[assets] * w).sum(axis=1) + cash_f * cash_daily
     bench_ret = rets[bench]
 
     growth = pd.DataFrame(
@@ -408,6 +412,8 @@ def analyze(close: pd.DataFrame, weights: dict[str, float], bench: str, rf: floa
         high_pairs=high_pairs,
         summary=summary,
         weights=w,
+        cash_f=cash_f,
+        cash_rate=cash_rate,
         rf=rf,
         sharpe_port=sharpe_port,
         sharpe_bench=sharpe_bench,
@@ -428,6 +434,8 @@ def analysis_to_excel(res: dict, bench: str) -> bytes:
                     "Sharpe cartera",
                     f"Sharpe índice ({bench})",
                     "Tasa libre de riesgo usada %",
+                    "Efectivo % de la cartera",
+                    "Rendimiento del efectivo %",
                     "Correlación cartera vs índice",
                     "Beta cartera vs índice",
                 ],
@@ -440,6 +448,8 @@ def analysis_to_excel(res: dict, bench: str) -> bytes:
                     round(res["sharpe_port"], 3),
                     round(res["sharpe_bench"], 3),
                     round(res["rf"], 2),
+                    round(res["cash_f"] * 100, 2),
+                    round(res["cash_rate"], 2),
                     round(res["corr_pb"], 3),
                     round(res["beta"], 3),
                 ],
@@ -455,6 +465,32 @@ def analysis_to_excel(res: dict, bench: str) -> bytes:
         for ws in writer.sheets.values():
             autosize(ws)
     return buffer.getvalue()
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 30)
+def check_tickers(tickers: tuple) -> dict:
+    """Devuelve {ticker: True/False} según tenga datos recientes en Yahoo."""
+    out = {}
+    try:
+        df = yf.download(list(tickers), period="1mo", progress=False, auto_adjust=True, group_by="column")
+        close = df["Close"] if not df.empty else pd.DataFrame()
+        if isinstance(close, pd.Series):
+            close = close.to_frame(name=tickers[0])
+        for t in tickers:
+            out[t] = t in close.columns and not close[t].isna().all()
+    except Exception:  # noqa: BLE001
+        return {t: True for t in tickers}   # ante la duda, no bloquear
+    return out
+
+
+def suggest_ticker(t: str) -> str:
+    if t in ("BTC", "ETH", "SOL", "ADA", "DOGE"):
+        return f"probá {t}-USD (así solo puede ser otra cosa)"
+    if t.endswith(".BA"):
+        return f"probá {t[:-3]} (sin .BA, si es la acción en EE.UU.)"
+    if "." not in t and "-" not in t and not t.startswith("^"):
+        return f"si es argentina o un CEDEAR, probá {t}.BA"
+    return "revisalo en finance.yahoo.com/lookup"
 
 
 def tab_cartera():
@@ -473,24 +509,71 @@ def tab_cartera():
     ticker_help()
     tickers = parse_tickers(tickers_raw)
 
-    st.markdown("**Pesos (% de la cartera).** Si no los tocás, se reparte en partes iguales.")
-    default_w = round(100 / len(tickers), 1) if tickers else 0
+    # --- pesos persistentes: los ya cargados se conservan, los nuevos entran en 0%
+    if "w_store" not in st.session_state:
+        st.session_state.w_store = {t: round(100 / len(tickers), 1) for t in tickers} if tickers else {}
+        st.session_state.w_nonce = 0
+    store = st.session_state.w_store
+    for t in tickers:
+        store.setdefault(t, 0.0)
+
+    st.markdown("**Pesos (% de la cartera).** Los activos nuevos entran en 0%; usá los botones para repartir.")
     weights_df = st.data_editor(
-        pd.DataFrame({"Ticker": tickers, "Peso %": [default_w] * len(tickers)}),
+        pd.DataFrame({"Ticker": tickers, "Peso %": [float(store[t]) for t in tickers]}),
         hide_index=True,
         use_container_width=True,
         disabled=["Ticker"],
         column_config={"Peso %": st.column_config.NumberColumn(min_value=0, max_value=100, step=0.5, format="%.1f")},
-        key=f"weights_{','.join(tickers)}",
+        key=f"weights_{','.join(tickers)}_{st.session_state.w_nonce}",
     )
+    for t, p in zip(weights_df["Ticker"], weights_df["Peso %"]):
+        store[t] = float(p) if pd.notna(p) else 0.0
 
-    total_w = float(pd.to_numeric(weights_df["Peso %"], errors="coerce").fillna(0).sum())
-    if abs(total_w - 100) < 0.05:
-        st.success(f"Total cargado: {total_w:.1f}% ✓")
-    elif total_w < 100:
-        st.warning(f"Total cargado: {total_w:.1f}% · te faltan {100 - total_w:.1f}% para llegar al 100%")
+    cash_c, b1, b2 = st.columns([1.4, 1, 1])
+    cash_w = cash_c.number_input(
+        "Efectivo (%)", min_value=0.0, max_value=100.0, value=0.0, step=1.0, key="cash_w",
+        help="Porcentaje de la cartera que tenés sin invertir. Baja la volatilidad y la caída máxima del total.",
+    )
+    if b1.button("Repartir en partes iguales", use_container_width=True) and tickers:
+        share = round((100 - cash_w) / len(tickers), 2)
+        for t in tickers:
+            store[t] = share
+        st.session_state.w_nonce += 1
+        st.rerun()
+    if b2.button("Completar hasta 100%", use_container_width=True, help="Reparte lo que falta entre los activos en 0%"):
+        falta = 100 - cash_w - sum(store[t] for t in tickers)
+        ceros = [t for t in tickers if store[t] == 0]
+        if falta > 0 and ceros:
+            share = round(falta / len(ceros), 2)
+            for t in ceros:
+                store[t] = share
+            st.session_state.w_nonce += 1
+            st.rerun()
+        elif falta <= 0:
+            st.toast("Ya llegaste al 100% o te pasaste.")
+        else:
+            st.toast("No hay activos en 0% para completar.")
+
+    if cash_w > 0:
+        cash_kind = st.radio(
+            "¿Ese efectivo rinde algo?",
+            options=["No rinde nada (dólares parados en el broker)",
+                     "Money market / letras (rinde la tasa libre de riesgo del período)"],
+            horizontal=False,
+            label_visibility="collapsed",
+            key="cash_kind",
+        )
     else:
-        st.warning(f"Total cargado: {total_w:.1f}% · te pasaste {total_w - 100:.1f}% del 100%")
+        cash_kind = "No rinde nada (dólares parados en el broker)"
+
+    total_w = float(pd.to_numeric(weights_df["Peso %"], errors="coerce").fillna(0).sum()) + cash_w
+    detalle = f" (incluye {cash_w:.1f}% de efectivo)" if cash_w > 0 else ""
+    if abs(total_w - 100) < 0.05:
+        st.success(f"Total cargado: {total_w:.1f}%{detalle} ✓")
+    elif total_w < 100:
+        st.warning(f"Total cargado: {total_w:.1f}%{detalle} · te faltan {100 - total_w:.1f}% para llegar al 100%")
+    else:
+        st.warning(f"Total cargado: {total_w:.1f}%{detalle} · te pasaste {total_w - 100:.1f}% del 100%")
 
     c1, c2 = st.columns(2)
     bench_label = c1.selectbox("Comparar contra", options=list(BENCHMARKS))
@@ -519,10 +602,33 @@ def tab_cartera():
             help="Se usa para calcular el Sharpe: cuánto rendimiento te dio cada unidad de riesgo, "
                  "por encima de lo que habrías ganado sin correr riesgo.",
         )
-        rf_manual = st.number_input("Tasa libre de riesgo anual (%)", min_value=0.0, max_value=25.0,
-                                    value=4.0, step=0.25, disabled=rf_auto)
+        if rf_auto:
+            rf_preview = risk_free_rate(start, end)
+            rf_manual = 4.0
+            if rf_preview is None:
+                st.caption("No se pudo consultar la tasa del período; se usará 4,00% anual.")
+            else:
+                st.caption(
+                    f"Tasa del período {start} → {end}: **{rf_preview:.2f}% anual** "
+                    f"(promedio de ^IRX, letra del Tesoro de EE.UU. a 13 semanas)."
+                )
+        else:
+            rf_preview = None
+            rf_manual = st.number_input("Tasa libre de riesgo anual (%)", min_value=0.0, max_value=25.0,
+                                        value=4.0, step=0.25)
 
-    run = st.button("Analizar mi cartera", type="primary", use_container_width=True)
+    v1, v2 = st.columns([1, 2])
+    if v1.button("Verificar tickers", use_container_width=True) and tickers:
+        with st.spinner("Consultando Yahoo Finance…"):
+            checked = check_tickers(tuple(tickers + ([bench] if bench else [])))
+        ok = [t for t, good in checked.items() if good]
+        bad = [t for t, good in checked.items() if not good]
+        if ok:
+            st.success("Existen en Yahoo: " + " · ".join(f"{t} ✓" for t in ok))
+        for t in bad:
+            st.error(f"{t} ✗ no devuelve datos — {suggest_ticker(t)}")
+
+    run = v2.button("Analizar mi cartera", type="primary", use_container_width=True)
     if not run:
         return
 
@@ -584,8 +690,9 @@ def tab_cartera():
         rf = rf_manual
         rf_note = f"Tasa libre de riesgo fijada manualmente en {rf:.2f}% anual."
 
+    cash_rate = rf if cash_kind.startswith("Money") else 0.0
     status.write("📐 Calculando correlaciones, volatilidad y caídas…")
-    res = analyze(close, weights, bench, rf)
+    res = analyze(close, weights, bench, rf, cash_w=cash_w, cash_rate=cash_rate)
     assets = list(res["weights"].index)
     status.write("📊 Armando gráficos…")
     status.update(label="Análisis listo ✓", state="complete", expanded=False)
@@ -679,6 +786,13 @@ def tab_cartera():
         f"(uno se mueve {ratio_ml:.1f} veces más que el otro)."
     )
 
+    if res["cash_f"] > 0:
+        st.caption(
+            f"El {res['cash_f'] * 100:.1f}% en efectivo "
+            + ("(sin rendimiento) " if res["cash_rate"] == 0 else f"(rindiendo {res['cash_rate']:.2f}% anual) ")
+            + "ya está incluido en la volatilidad y las caídas de la cartera: la amortigua, pero también le resta rendimiento."
+        )
+
     # 4 · Drawdowns -----------------------------------------------------------------
     st.divider()
     st.subheader("4 · Cuánto podría caer")
@@ -742,6 +856,11 @@ def tab_cartera():
     # Detalle y descarga ------------------------------------------------------------
     st.divider()
     st.subheader("Detalle por activo")
+    if res["cash_f"] > 0:
+        st.caption(
+            f"Los pesos de abajo ya están expresados sobre el total de la cartera. "
+            f"El {res['cash_f'] * 100:.1f}% restante es efectivo."
+        )
     st.dataframe(
         res["summary"].style.format({"Peso %": "{:.1f}", "Rendimiento anual %": "{:.1f}", "Volatilidad anual %": "{:.1f}", "Sharpe": "{:.2f}", "Correlación c/ índice": "{:.2f}"}),
         use_container_width=True,
